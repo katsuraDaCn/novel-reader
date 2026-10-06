@@ -1,0 +1,17 @@
+{
+  "name": "novel-reader",
+  "productName": "小说阅读器",
+  "version": "1.0.0",
+  "description": "一个简洁的桌面小说阅读器（支持 TXT，编码自动识别）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "shortcut": "node scripts/make-shortcut.js",
+    "test:text": "node test/gen-samples.js && node test/test-text.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "iconv-lite": "^0.7.3"
+  }
+}

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>小说阅读器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-theme="sepia">
+
+  <!-- ===== 书架 ===== -->
+  <section id="view-shelf" class="view">
+    <header class="topbar">
+      <div class="brand"><span class="brand-icon">📖</span><h1>小说阅读器</h1></div>
+      <div class="topbar-actions">
+        <button id="btn-import" class="btn primary">＋ 导入小说</button>
+      </div>
+    </header>
+    <main class="shelf-area">
+      <div id="shelf-grid" class="shelf-grid"></div>
+      <div id="shelf-empty" class="empty hidden">
+        <div class="empty-icon">📚</div>
+        <p>书架空空如也</p>
+        <p class="empty-sub">点击右上角「导入小说」，或直接把 TXT 文件拖进窗口</p>
+      </div>
+    </main>
+  </section>
+
+  <!-- ===== 阅读视图 ===== -->
+  <section id="view-reader" class="view hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button id="btn-back" class="btn ghost" title="返回书架 (Esc)">← 书架</button>
+        <span id="reader-book-title" class="reader-book-title"></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-toc" class="btn ghost">目录</button>
+        <button id="btn-settings" class="btn ghost">设置</button>
+      </div>
+    </header>
+
+    <main id="reader-scroll" class="reader-scroll" tabindex="-1">
+      <article class="reader-page">
+        <h2 id="ch-title" class="ch-title"></h2>
+        <div id="ch-body" class="ch-body"></div>
+        <div class="ch-end">
+          <button id="btn-prev-end" class="btn ghost">← 上一章</button>
+          <button id="btn-next-end" class="btn ghost">下一章 →</button>
+        </div>
+      </article>
+    </main>
+
+    <footer class="reader-bottombar">
+      <button id="btn-prev" class="btn ghost" title="上一章 (←)">上一章</button>
+      <div class="progress-wrap">
+        <input id="progress-slider" type="range" min="1" max="1" value="1">
+        <span id="progress-label">0%</span>
+      </div>
+      <button id="btn-next" class="btn ghost" title="下一章 (→)">下一章</button>
+    </footer>
+
+    <!-- 目录面板 -->
+    <aside id="toc-panel" class="side-panel left">
+      <div class="panel-head">
+        <h3>目录 <span id="toc-count" class="muted"></span></h3>
+        <input id="toc-search" type="search" placeholder="搜索章节 / 全文…">
+      </div>
+      <div id="toc-list" class="toc-list"></div>
+    </aside>
+
+    <!-- 设置面板 -->
+    <aside id="settings-panel" class="side-panel right">
+      <div class="panel-head"><h3>阅读设置</h3></div>
+      <div class="settings-body">
+        <div class="setting-row">
+          <span class="setting-label">字号</span>
+          <div class="setting-ctrl">
+            <button id="font-minus" class="btn small">A－</button>
+            <span id="font-value" class="setting-value"></span>
+            <button id="font-plus" class="btn small">A＋</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">行距</span>
+          <div class="setting-ctrl">
+            <input id="line-height" type="range" min="15" max="26" step="1">
+            <span id="line-height-value" class="setting-value"></span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">页宽</span>
+          <div class="setting-ctrl">
+            <input id="page-width" type="range" min="560" max="1000" step="20">
+            <span id="page-width-value" class="setting-value"></span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">字体</span>
+          <div class="setting-ctrl" id="font-family-group">
+            <button class="btn small seg" data-font="default">默认</button>
+            <button class="btn small seg" data-font="song">宋体</button>
+            <button class="btn small seg" data-font="hei">黑体</button>
+            <button class="btn small seg" data-font="kai">楷体</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">主题</span>
+          <div class="setting-ctrl" id="theme-group">
+            <button class="theme-dot" data-theme="light" title="白天"></button>
+            <button class="theme-dot" data-theme="sepia" title="羊皮纸"></button>
+            <button class="theme-dot" data-theme="green" title="护眼"></button>
+            <button class="theme-dot" data-theme="dark" title="夜间"></button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div id="panel-mask" class="panel-mask hidden"></div>
+  </section>
+
+  <!-- 拖放遮罩 -->
+  <div id="drop-overlay" class="drop-overlay hidden"><div>📥 松开鼠标导入 TXT 小说</div></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
