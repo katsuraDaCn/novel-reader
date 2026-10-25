@@ -4,3 +4,5 @@ test/samples/
 *.log
 .DS_Store
 .zcode/
+.zcode/
+.zcodeignore
