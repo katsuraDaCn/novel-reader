@@ -12,15 +12,29 @@
     <header class="topbar">
       <div class="brand"><span class="brand-icon">📖</span><h1>小说阅读器</h1></div>
       <div class="topbar-actions">
+        <button id="btn-vault" class="btn ghost icon" title="隐私书架">🔒</button>
         <button id="btn-import" class="btn primary">＋ 导入小说</button>
       </div>
     </header>
     <main class="shelf-area">
+      <div id="vault-banner" class="vault-banner hidden">
+        <span id="vault-count">🔓 隐藏书架</span>
+        <div class="vault-actions">
+          <button id="btn-change-password" class="btn small ghost">修改密码</button>
+          <button id="btn-lock" class="btn small">上锁</button>
+        </div>
+      </div>
       <div id="shelf-grid" class="shelf-grid"></div>
+      <div id="vault-grid" class="shelf-grid hidden"></div>
       <div id="shelf-empty" class="empty hidden">
         <div class="empty-icon">📚</div>
         <p>书架空空如也</p>
         <p class="empty-sub">点击右上角「导入小说」，或直接把 TXT 文件拖进窗口</p>
+      </div>
+      <div id="vault-empty" class="empty hidden">
+        <div class="empty-icon">🤫</div>
+        <p>这里空空如也</p>
+        <p class="empty-sub">在普通书架右键某本书，选择「隐藏此书」即可收入这里</p>
       </div>
     </main>
   </section>
@@ -116,6 +130,22 @@
 
     <div id="panel-mask" class="panel-mask hidden"></div>
   </section>
+
+  <!-- 书籍右键菜单 -->
+  <div id="ctx-menu" class="ctx-menu hidden"></div>
+
+  <!-- 隐私书架密码弹窗 -->
+  <div id="pw-mask" class="pw-mask hidden"></div>
+  <div id="pw-modal" class="pw-modal hidden">
+    <h3 id="pw-title"></h3>
+    <p id="pw-hint" class="pw-hint hidden"></p>
+    <div id="pw-fields"></div>
+    <p id="pw-error" class="pw-error"></p>
+    <div class="pw-actions">
+      <button id="pw-cancel" class="btn ghost">取消</button>
+      <button id="pw-ok" class="btn primary">确定</button>
+    </div>
+  </div>
 
   <!-- 拖放遮罩 -->
   <div id="drop-overlay" class="drop-overlay hidden"><div>📥 松开鼠标导入 TXT 小说</div></div>

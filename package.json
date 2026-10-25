@@ -7,7 +7,9 @@
   "scripts": {
     "start": "electron .",
     "shortcut": "node scripts/make-shortcut.js",
-    "test:text": "node test/gen-samples.js && node test/test-text.js"
+    "test": "node test/gen-samples.js && node test/test-text.js && node test/test-security.js",
+    "test:text": "node test/gen-samples.js && node test/test-text.js",
+    "test:security": "node test/test-security.js"
   },
   "license": "MIT",
   "devDependencies": {

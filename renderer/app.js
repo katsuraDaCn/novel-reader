@@ -110,18 +110,34 @@ function createMockApi() {
       chapterIdx: 0,
       scrollRatio: 0,
       lastReadAt: 0,
+      hidden: false,
     };
     lib.unshift(meta);
     return meta;
   };
+  // 演示模式下的隐私书架状态（仅内存，与主进程“重启即上锁”的行为一致）
+  const sec = { record: null, unlocked: false };
+  const guard = { fails: 0, until: 0 };
   if (!lib.length) addBook(makeDemoBook());
   return {
     __mock: true,
     pathForFile: (file) => (file && file.name) || '',
-    getLibrary: async () => lib.slice(),
+    getLibrary: async () => lib.filter((m) => !m.hidden),
+    getHiddenLibrary: async () => (sec.unlocked ? lib.filter((m) => m.hidden) : []),
+    hideBook: async (id, hidden) => {
+      const meta = lib.find((m) => m.id === id);
+      if (!meta) return false;
+      if (meta.hidden && !hidden && !sec.unlocked) return false;
+      meta.hidden = !!hidden;
+      return true;
+    },
     importDialog: async () => ({ canceled: false, added: [addBook(makeDemoBook())], skipped: 0 }),
     importPaths: async () => ({ added: [addBook(makeDemoBook())], skipped: 0 }),
-    getBook: async (id) => books[id] || null,
+    getBook: async (id) => {
+      const meta = lib.find((m) => m.id === id);
+      if (meta && meta.hidden && !sec.unlocked) return null;
+      return books[id] || null;
+    },
     saveProgress: async (id, progress) => {
       const meta = lib.find((m) => m.id === id);
       if (!meta) return false;
@@ -130,8 +146,52 @@ function createMockApi() {
     },
     deleteBook: async (id) => {
       const i = lib.findIndex((m) => m.id === id);
-      if (i !== -1) lib.splice(i, 1);
+      if (i === -1) return false;
+      if (lib[i].hidden && !sec.unlocked) return false;
+      lib.splice(i, 1);
       return true;
+    },
+    securityStatus: async () => ({
+      hasPassword: !!sec.record,
+      unlocked: sec.unlocked,
+      hint: sec.record ? sec.record.hint || '' : '',
+    }),
+    // 演示模式仅在内存中比对密码，不落盘
+    securitySetup: async ({ password, hint } = {}) => {
+      if (sec.record) return { ok: false, error: '已设置过密码' };
+      if (!password) return { ok: false, error: '密码不能为空' };
+      sec.record = { hint: hint || '', demo: password };
+      sec.unlocked = true;
+      return { ok: true };
+    },
+    securityUnlock: async (password) => {
+      const now = Date.now();
+      if (now < guard.until) return { ok: false, cooldownMs: guard.until - now };
+      if (!sec.record) return { ok: false, error: '尚未设置密码' };
+      if (password !== sec.record.demo) {
+        guard.fails += 1;
+        if (guard.fails >= 5) {
+          guard.until = now + 30000;
+          guard.fails = 0;
+        }
+        if (now < guard.until) return { ok: false, cooldownMs: guard.until - now };
+        return { ok: false, error: '密码不对', attemptsLeft: 5 - guard.fails };
+      }
+      guard.fails = 0;
+      guard.until = 0;
+      sec.unlocked = true;
+      return { ok: true };
+    },
+    securityLock: async () => {
+      sec.unlocked = false;
+      return true;
+    },
+    securityChange: async ({ oldPassword, newPassword } = {}) => {
+      if (!sec.record) return { ok: false, error: '尚未设置密码' };
+      if (oldPassword !== sec.record.demo) return { ok: false, error: '旧密码不对' };
+      if (!newPassword) return { ok: false, error: '新密码不能为空' };
+      sec.record = { hint: sec.record.hint || '', demo: newPassword };
+      return { ok: true };
     },
   };
 }
@@ -149,8 +209,10 @@ const DEFAULT_SETTINGS = { fontSize: 19, lineHeight: 1.9, pageWidth: 720, fontFa
 
 const state = {
   library: [],
+  hiddenLibrary: [],
   book: null, // 当前打开的书（含 chapters）
   chapterIdx: 0,
+  shelfView: 'normal', // 'normal' 普通书架 | 'vault' 隐藏书架
   settings: { ...DEFAULT_SETTINGS },
 };
 
@@ -214,12 +276,23 @@ function bookPercent(meta) {
 }
 
 function renderShelf() {
-  const grid = $('#shelf-grid');
+  const vault = state.shelfView === 'vault';
+  $('#vault-banner').classList.toggle('hidden', !vault);
+  $('#btn-import').classList.toggle('hidden', vault);
+  $('#shelf-grid').classList.toggle('hidden', vault);
+  $('#vault-grid').classList.toggle('hidden', !vault);
+
+  const grid = vault ? $('#vault-grid') : $('#shelf-grid');
   grid.textContent = '';
-  const list = state.library
+  const source = vault ? state.hiddenLibrary : state.library;
+  const list = source
     .slice()
     .sort((a, b) => (b.lastReadAt || b.importedAt) - (a.lastReadAt || a.importedAt));
-  $('#shelf-empty').classList.toggle('hidden', list.length > 0);
+  const emptyEl = vault ? $('#vault-empty') : $('#shelf-empty');
+  const otherEmptyEl = vault ? $('#shelf-empty') : $('#vault-empty');
+  emptyEl.classList.toggle('hidden', list.length > 0);
+  otherEmptyEl.classList.add('hidden');
+  $('#vault-count').textContent = `🔓 隐藏书架（${list.length} 本）`;
 
   for (const m of list) {
     const card = el('div', 'book-card');
@@ -248,6 +321,11 @@ function renderShelf() {
 
     card.append(del, title, meta, read, bar, pctText);
     card.addEventListener('click', () => openBook(m.id));
+    card.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openBookContextMenu(e.clientX, e.clientY, m);
+    });
     grid.appendChild(card);
   }
 }
@@ -255,8 +333,48 @@ function renderShelf() {
 async function removeBook(meta) {
   if (!confirm(`确定要删除《${meta.title}》吗？\n（只会移除书架记录，不会删除你的原文件）`)) return;
   await backend.deleteBook(meta.id);
-  await loadLibrary();
+  if (state.shelfView === 'vault') {
+    state.hiddenLibrary = await backend.getHiddenLibrary();
+    renderShelf();
+  } else {
+    await loadLibrary();
+  }
   toast('已删除');
+}
+
+async function hideBook(meta) {
+  const ok = await backend.hideBook(meta.id, true);
+  if (!ok) {
+    toast('操作失败');
+    return;
+  }
+  await loadLibrary();
+  toast('已隐藏，点右上角 🔒 查看');
+}
+
+async function unhideBook(meta) {
+  const ok = await backend.hideBook(meta.id, false);
+  if (!ok) {
+    toast('操作失败');
+    return;
+  }
+  state.hiddenLibrary = await backend.getHiddenLibrary();
+  state.library = await backend.getLibrary();
+  renderShelf();
+  toast('已取消隐藏');
+}
+
+async function loadHidden() {
+  state.hiddenLibrary = await backend.getHiddenLibrary();
+  renderShelf();
+}
+
+async function lockVault() {
+  await backend.securityLock();
+  state.hiddenLibrary = [];
+  state.shelfView = 'normal';
+  renderShelf();
+  toast('已上锁');
 }
 
 async function doImportDialog() {
@@ -287,7 +405,10 @@ async function openBook(id) {
     return;
   }
   state.book = book;
-  const meta = state.library.find((m) => m.id === id) || book;
+  const meta =
+    state.library.find((m) => m.id === id) ||
+    (state.hiddenLibrary || []).find((m) => m.id === id) ||
+    book;
   const idx = Math.min(meta.chapterIdx || 0, book.chapters.length - 1);
   $('#reader-book-title').textContent = book.title;
   $('#toc-search').value = '';
@@ -301,6 +422,7 @@ async function openBook(id) {
 async function backToShelf() {
   await saveProgressNow();
   state.book = null;
+  state.shelfView = 'normal';
   showView('shelf');
   await loadLibrary();
 }
@@ -516,15 +638,229 @@ function togglePanel(which) {
   openPanel(panel.classList.contains('open') ? null : which);
 }
 
+/* ================= 右键菜单与隐私书架密码弹窗 ================= */
+
+let pwMode = null; // 'setup' | 'unlock' | 'change'
+let pwInputs = [];
+let cooldownTimer = null;
+
+function openBookContextMenu(x, y, meta) {
+  const items =
+    state.shelfView === 'vault'
+      ? [
+          { label: '取消隐藏', action: () => unhideBook(meta) },
+          { label: '删除这本书', action: () => removeBook(meta) },
+        ]
+      : [{ label: '隐藏此书', action: () => hideBook(meta) }];
+  openContextMenu(x, y, items);
+}
+
+function openContextMenu(x, y, items) {
+  const menu = $('#ctx-menu');
+  menu.textContent = '';
+  for (const it of items) {
+    const b = el('button', 'ctx-item', it.label);
+    b.addEventListener('click', () => {
+      closeContextMenu();
+      it.action();
+    });
+    menu.appendChild(b);
+  }
+  menu.classList.remove('hidden');
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) + 'px';
+}
+
+function closeContextMenu() {
+  $('#ctx-menu').classList.add('hidden');
+}
+
+function isPwModalOpen() {
+  return !$('#pw-modal').classList.contains('hidden');
+}
+
+function showPwError(msg) {
+  $('#pw-error').textContent = msg || '';
+}
+
+function shakeModal() {
+  const modal = $('#pw-modal');
+  modal.classList.remove('shake');
+  void modal.offsetWidth;
+  modal.classList.add('shake');
+}
+
+function addPwField(placeholder, isText) {
+  const row = el('div', 'pw-row');
+  const input = el('input');
+  input.type = isText ? 'text' : 'password';
+  input.placeholder = placeholder;
+  input.maxLength = 64;
+  input.autocomplete = 'off';
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitPw();
+  });
+  row.appendChild(input);
+  $('#pw-fields').appendChild(row);
+  return input;
+}
+
+function openPwModal(mode, hint) {
+  pwMode = mode;
+  pwInputs = [];
+  stopCooldown();
+  $('#pw-mask').classList.remove('hidden');
+  $('#pw-modal').classList.remove('hidden');
+  $('#pw-fields').textContent = '';
+  showPwError('');
+  const hintEl = $('#pw-hint');
+  if (mode === 'setup') {
+    $('#pw-title').textContent = '设置隐私书架密码';
+    hintEl.classList.add('hidden');
+    pwInputs = [addPwField('新密码'), addPwField('确认新密码'), addPwField('密码提示（可选）', true)];
+  } else if (mode === 'unlock') {
+    $('#pw-title').textContent = '解锁隐私书架';
+    if (hint) {
+      hintEl.textContent = `提示：${hint}`;
+      hintEl.classList.remove('hidden');
+    } else {
+      hintEl.classList.add('hidden');
+    }
+    pwInputs = [addPwField('密码')];
+  } else if (mode === 'change') {
+    $('#pw-title').textContent = '修改密码';
+    hintEl.classList.add('hidden');
+    pwInputs = [addPwField('旧密码'), addPwField('新密码'), addPwField('确认新密码')];
+  }
+  setTimeout(() => pwInputs[0] && pwInputs[0].focus(), 30);
+}
+
+function closePwModal() {
+  stopCooldown();
+  $('#pw-mask').classList.add('hidden');
+  $('#pw-modal').classList.add('hidden');
+  pwMode = null;
+  pwInputs = [];
+}
+
+function startCooldown(ms) {
+  stopCooldown();
+  $('#pw-ok').disabled = true;
+  pwInputs.forEach((i) => (i.disabled = true));
+  const tick = () => showPwError(`失败次数过多，请 ${Math.max(1, Math.ceil(ms / 1000))} 秒后再试`);
+  tick();
+  cooldownTimer = setInterval(() => {
+    ms -= 500;
+    if (ms <= 0) {
+      stopCooldown();
+      showPwError('');
+      return;
+    }
+    tick();
+  }, 500);
+}
+
+function stopCooldown() {
+  if (cooldownTimer) {
+    clearInterval(cooldownTimer);
+    cooldownTimer = null;
+  }
+  const okBtn = $('#pw-ok');
+  if (okBtn) okBtn.disabled = false;
+  pwInputs.forEach((i) => (i.disabled = false));
+}
+
+async function submitPw() {
+  if (!isPwModalOpen()) return;
+  const vals = pwInputs.map((i) => i.value);
+
+  if (pwMode === 'setup') {
+    if (!vals[0]) {
+      showPwError('密码不能为空');
+      shakeModal();
+      return;
+    }
+    if (vals[0] !== vals[1]) {
+      showPwError('两次输入的密码不一致');
+      shakeModal();
+      return;
+    }
+    const r = await backend.securitySetup({ password: vals[0], hint: vals[2] || '' });
+    if (!r.ok) {
+      showPwError(r.error || '设置失败');
+      shakeModal();
+      return;
+    }
+    closePwModal();
+    toast('密码已设置');
+    state.shelfView = 'vault';
+    await loadHidden();
+  } else if (pwMode === 'unlock') {
+    if (!vals[0]) {
+      showPwError('请输入密码');
+      return;
+    }
+    const r = await backend.securityUnlock(vals[0]);
+    if (r.ok) {
+      closePwModal();
+      toast('已解锁');
+      state.shelfView = 'vault';
+      await loadHidden();
+    } else if (r.cooldownMs) {
+      startCooldown(r.cooldownMs);
+    } else {
+      showPwError((r.error || '解锁失败') + (typeof r.attemptsLeft === 'number' ? `，还可尝试 ${r.attemptsLeft} 次` : ''));
+      shakeModal();
+    }
+  } else if (pwMode === 'change') {
+    if (!vals[0] || !vals[1]) {
+      showPwError('请填写完整');
+      return;
+    }
+    if (vals[1] !== vals[2]) {
+      showPwError('两次输入的新密码不一致');
+      shakeModal();
+      return;
+    }
+    const r = await backend.securityChange({ oldPassword: vals[0], newPassword: vals[1] });
+    if (!r.ok) {
+      showPwError(r.error || '修改失败');
+      shakeModal();
+      return;
+    }
+    closePwModal();
+    toast('密码已修改');
+  }
+}
+
+async function onVaultButton() {
+  const st = await backend.securityStatus();
+  if (st.unlocked) {
+    state.shelfView = 'vault';
+    await loadHidden();
+    return;
+  }
+  openPwModal(st.hasPassword ? 'unlock' : 'setup', st.hint);
+}
+
 /* ================= 键盘 / 拖放 ================= */
 
 function onKeydown(e) {
   const tag = document.activeElement && document.activeElement.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') {
-    if (e.key === 'Escape') document.activeElement.blur();
-    return;
-  }
   if (e.key === 'Escape') {
+    if (isPwModalOpen()) {
+      closePwModal();
+      return;
+    }
+    if (!$('#ctx-menu').classList.contains('hidden')) {
+      closeContextMenu();
+      return;
+    }
+    if (tag === 'INPUT' || tag === 'TEXTAREA') {
+      document.activeElement.blur();
+      return;
+    }
     if ($('#panel-mask') && !$('#panel-mask').classList.contains('hidden')) {
       closePanels();
     } else if (state.book) {
@@ -532,6 +868,7 @@ function onKeydown(e) {
     }
     return;
   }
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   if (!state.book) return;
   if (e.key === 'ArrowLeft') prevChapter();
   if (e.key === 'ArrowRight') nextChapter();
@@ -583,6 +920,19 @@ function bindEvents() {
   $('#btn-toc').addEventListener('click', () => togglePanel('toc'));
   $('#btn-settings').addEventListener('click', () => togglePanel('settings'));
   $('#panel-mask').addEventListener('click', closePanels);
+
+  $('#btn-vault').addEventListener('click', onVaultButton);
+  $('#btn-lock').addEventListener('click', lockVault);
+  $('#btn-change-password').addEventListener('click', () => openPwModal('change'));
+  $('#pw-cancel').addEventListener('click', closePwModal);
+  $('#pw-ok').addEventListener('click', submitPw);
+  $('#pw-mask').addEventListener('click', closePwModal);
+  window.addEventListener('click', (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest('#ctx-menu')) closeContextMenu();
+  });
+  window.addEventListener('contextmenu', (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest('.book-card')) closeContextMenu();
+  });
 
   $('#btn-prev').addEventListener('click', prevChapter);
   $('#btn-next').addEventListener('click', nextChapter);

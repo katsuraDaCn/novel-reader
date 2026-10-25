@@ -4,13 +4,20 @@ const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { buildBook } = require('./lib/text');
+const { hashPassword, verifyPassword, createAttemptGuard } = require('./lib/security');
 
 // 数据（书架记录 + 书籍内容）存放在项目目录的 data/ 下，便于查看和备份
 const DATA_DIR = path.join(__dirname, 'data');
 const BOOKS_DIR = path.join(DATA_DIR, 'books');
 const LIBRARY_FILE = path.join(DATA_DIR, 'library.json');
+const SECURITY_FILE = path.join(DATA_DIR, 'security.json');
 
 let mainWindow = null;
+
+// ---- 隐私书架状态（仅存于内存，重启自动上锁） ----
+let securityRecord = null; // { salt, hash, hint }
+let vaultUnlocked = false;
+const unlockGuard = createAttemptGuard();
 
 function ensureDirs() {
   fs.mkdirSync(BOOKS_DIR, { recursive: true });
@@ -26,6 +33,19 @@ function readLibrary() {
 
 function writeLibrary(lib) {
   fs.writeFileSync(LIBRARY_FILE, JSON.stringify(lib, null, 2), 'utf8');
+}
+
+function loadSecurity() {
+  try {
+    securityRecord = JSON.parse(fs.readFileSync(SECURITY_FILE, 'utf8'));
+  } catch (_) {
+    securityRecord = null;
+  }
+  vaultUnlocked = false; // 启动即锁定
+}
+
+function saveSecurity() {
+  fs.writeFileSync(SECURITY_FILE, JSON.stringify(securityRecord, null, 2), 'utf8');
 }
 
 function importPaths(paths) {
@@ -64,6 +84,7 @@ function importPaths(paths) {
         chapterIdx: 0,
         scrollRatio: 0,
         lastReadAt: 0,
+        hidden: false,
       };
       lib.push(meta);
       added.push(meta);
@@ -77,7 +98,13 @@ function importPaths(paths) {
 }
 
 function registerIpc() {
-  ipcMain.handle('library:get', () => readLibrary());
+  // ---- 书架（默认只返回未隐藏的书） ----
+  ipcMain.handle('library:get', () => readLibrary().filter((m) => !m.hidden));
+
+  ipcMain.handle('library:getHidden', () => {
+    if (!vaultUnlocked) return [];
+    return readLibrary().filter((m) => m.hidden);
+  });
 
   ipcMain.handle('books:importDialog', async () => {
     const res = await dialog.showOpenDialog(mainWindow, {
@@ -97,11 +124,28 @@ function registerIpc() {
 
   ipcMain.handle('book:get', (_e, id) => {
     if (typeof id !== 'string' || !/^bk_[a-z0-9]+$/.test(id)) return null;
+    // 未解锁时，隐藏书对渲染进程不可见（防御深度：正常情况下界面根本不会请求到）
+    const meta = readLibrary().find((m) => m.id === id);
+    if (meta && meta.hidden && !vaultUnlocked) return null;
     try {
       return JSON.parse(fs.readFileSync(path.join(BOOKS_DIR, id + '.json'), 'utf8'));
     } catch (_) {
       return null;
     }
+  });
+
+  // 隐藏/取消隐藏。隐藏不需要密码；取消隐藏必须已解锁
+  ipcMain.handle('books:hide', (_e, id, hidden) => {
+    if (typeof id !== 'string') return false;
+    const lib = readLibrary();
+    const meta = lib.find((m) => m.id === id);
+    if (!meta) return false;
+    if (meta.hidden && !hidden && !vaultUnlocked) return false;
+    meta.hidden = !!hidden;
+    if (meta.hidden) meta.hiddenAt = Date.now();
+    else delete meta.hiddenAt;
+    writeLibrary(lib);
+    return true;
   });
 
   ipcMain.handle('progress:save', (_e, id, progress) => {
@@ -126,6 +170,7 @@ function registerIpc() {
     const lib = readLibrary();
     const idx = lib.findIndex((m) => m.id === id);
     if (idx === -1) return false;
+    if (lib[idx].hidden && !vaultUnlocked) return false;
     lib.splice(idx, 1);
     writeLibrary(lib);
     try {
@@ -134,6 +179,59 @@ function registerIpc() {
       // 文件不存在则忽略
     }
     return true;
+  });
+
+  // ---- 隐私书架密码 ----
+  ipcMain.handle('security:status', () => ({
+    hasPassword: !!securityRecord,
+    unlocked: vaultUnlocked,
+    hint: securityRecord ? securityRecord.hint || '' : '',
+  }));
+
+  ipcMain.handle('security:setup', (_e, payload) => {
+    if (securityRecord) return { ok: false, error: '已设置过密码' };
+    const password = payload && typeof payload.password === 'string' ? payload.password : '';
+    if (!password) return { ok: false, error: '密码不能为空' };
+    const { salt, hash } = hashPassword(password);
+    securityRecord = { salt, hash, hint: payload && typeof payload.hint === 'string' ? payload.hint : '' };
+    saveSecurity();
+    vaultUnlocked = true;
+    return { ok: true };
+  });
+
+  ipcMain.handle('security:unlock', (_e, password) => {
+    const now = Date.now();
+    if (unlockGuard.isCoolingDown(now)) {
+      return { ok: false, cooldownMs: unlockGuard.remainingMs(now) };
+    }
+    if (!securityRecord) return { ok: false, error: '尚未设置密码' };
+    if (!verifyPassword(password, securityRecord)) {
+      unlockGuard.recordFail(now);
+      if (unlockGuard.isCoolingDown(now)) {
+        return { ok: false, cooldownMs: unlockGuard.remainingMs(now) };
+      }
+      return { ok: false, error: '密码不对', attemptsLeft: unlockGuard.attemptsLeft };
+    }
+    unlockGuard.reset();
+    vaultUnlocked = true;
+    return { ok: true };
+  });
+
+  ipcMain.handle('security:lock', () => {
+    vaultUnlocked = false;
+    return true;
+  });
+
+  ipcMain.handle('security:change', (_e, payload) => {
+    if (!securityRecord) return { ok: false, error: '尚未设置密码' };
+    const oldPassword = payload && typeof payload.oldPassword === 'string' ? payload.oldPassword : '';
+    const newPassword = payload && typeof payload.newPassword === 'string' ? payload.newPassword : '';
+    if (!verifyPassword(oldPassword, securityRecord)) return { ok: false, error: '旧密码不对' };
+    if (!newPassword) return { ok: false, error: '新密码不能为空' };
+    const { salt, hash } = hashPassword(newPassword);
+    securityRecord = { salt, hash, hint: securityRecord.hint || '' };
+    saveSecurity();
+    return { ok: true };
   });
 }
 
@@ -180,6 +278,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   ensureDirs();
+  loadSecurity();
   registerIpc();
   Menu.setApplicationMenu(null);
   createWindow();
