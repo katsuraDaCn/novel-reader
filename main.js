@@ -52,6 +52,10 @@ function importPaths(paths) {
   const lib = readLibrary();
   const added = [];
   let skipped = 0;
+  // 已有自定义排序时，新书追加到末尾
+  const hasCustomOrder = lib.some((m) => typeof m.order === 'number');
+  let nextOrder =
+    lib.reduce((n, m) => Math.max(n, typeof m.order === 'number' ? m.order : -1), -1) + 1;
   for (const p of paths) {
     if (typeof p !== 'string' || !/\.txt$/i.test(p)) {
       skipped++;
@@ -86,6 +90,7 @@ function importPaths(paths) {
         lastReadAt: 0,
         hidden: false,
       };
+      if (hasCustomOrder) meta.order = nextOrder++;
       lib.push(meta);
       added.push(meta);
     } catch (err) {
@@ -144,6 +149,18 @@ function registerIpc() {
     meta.hidden = !!hidden;
     if (meta.hidden) meta.hiddenAt = Date.now();
     else delete meta.hiddenAt;
+    writeLibrary(lib);
+    return true;
+  });
+
+  // 拖拽排序：按界面提交的顺序写入 order 字段
+  ipcMain.handle('books:reorder', (_e, orderedIds) => {
+    if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== 'string')) return false;
+    const lib = readLibrary();
+    orderedIds.forEach((id, i) => {
+      const meta = lib.find((m) => m.id === id);
+      if (meta) meta.order = i;
+    });
     writeLibrary(lib);
     return true;
   });

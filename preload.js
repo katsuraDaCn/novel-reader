@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   saveProgress: (id, progress) => ipcRenderer.invoke('progress:save', id, progress),
   deleteBook: (id) => ipcRenderer.invoke('book:delete', id),
   hideBook: (id, hidden) => ipcRenderer.invoke('books:hide', id, hidden),
+  reorderBooks: (orderedIds) => ipcRenderer.invoke('books:reorder', orderedIds),
 
   // 隐私书架
   securityStatus: () => ipcRenderer.invoke('security:status'),

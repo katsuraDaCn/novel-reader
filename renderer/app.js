@@ -118,7 +118,11 @@ function createMockApi() {
   // 演示模式下的隐私书架状态（仅内存，与主进程“重启即上锁”的行为一致）
   const sec = { record: null, unlocked: false };
   const guard = { fails: 0, until: 0 };
-  if (!lib.length) addBook(makeDemoBook());
+  if (!lib.length) {
+    addBook(makeDemoBook('山间来信（示例书籍）'));
+    addBook(makeDemoBook('雾中灯塔（示例书籍）'));
+    addBook(makeDemoBook('北方无战事（示例书籍）'));
+  }
   return {
     __mock: true,
     pathForFile: (file) => (file && file.name) || '',
@@ -129,6 +133,14 @@ function createMockApi() {
       if (!meta) return false;
       if (meta.hidden && !hidden && !sec.unlocked) return false;
       meta.hidden = !!hidden;
+      return true;
+    },
+    reorderBooks: async (orderedIds) => {
+      if (!Array.isArray(orderedIds)) return false;
+      orderedIds.forEach((id, i) => {
+        const meta = lib.find((m) => m.id === id);
+        if (meta) meta.order = i;
+      });
       return true;
     },
     importDialog: async () => ({ canceled: false, added: [addBook(makeDemoBook())], skipped: 0 }),
@@ -264,6 +276,15 @@ function changeFont(delta) {
 
 /* ================= 书架 ================= */
 
+// 自定义排序优先：只要当前列表里每本书都有 order（拖过一次之后就有），就按 order 排
+function sortBooks(list) {
+  const arr = list.slice();
+  if (arr.length > 1 && arr.every((m) => typeof m.order === 'number')) {
+    return arr.sort((a, b) => a.order - b.order);
+  }
+  return arr.sort((a, b) => (b.lastReadAt || b.importedAt) - (a.lastReadAt || a.importedAt));
+}
+
 async function loadLibrary() {
   state.library = (await backend.getLibrary()) || [];
   renderShelf();
@@ -285,9 +306,7 @@ function renderShelf() {
   const grid = vault ? $('#vault-grid') : $('#shelf-grid');
   grid.textContent = '';
   const source = vault ? state.hiddenLibrary : state.library;
-  const list = source
-    .slice()
-    .sort((a, b) => (b.lastReadAt || b.importedAt) - (a.lastReadAt || a.importedAt));
+  const list = sortBooks(source);
   const emptyEl = vault ? $('#vault-empty') : $('#shelf-empty');
   const otherEmptyEl = vault ? $('#shelf-empty') : $('#vault-empty');
   emptyEl.classList.toggle('hidden', list.length > 0);
@@ -320,12 +339,17 @@ function renderShelf() {
     const pctText = el('div', 'book-pct', pct > 0 ? (pct >= 99.95 ? '已读完成' : pct.toFixed(1) + '%') : '');
 
     card.append(del, title, meta, read, bar, pctText);
+    card.draggable = true;
     card.addEventListener('click', () => openBook(m.id));
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
       openBookContextMenu(e.clientX, e.clientY, m);
     });
+    card.addEventListener('dragstart', (e) => onCardDragStart(e, card));
+    card.addEventListener('dragover', (e) => onCardDragOver(e, card));
+    card.addEventListener('drop', onCardDrop);
+    card.addEventListener('dragend', (e) => onCardDragEnd(e, card));
     grid.appendChild(card);
   }
 }
@@ -375,6 +399,54 @@ async function lockVault() {
   state.shelfView = 'normal';
   renderShelf();
   toast('已上锁');
+}
+
+/* ================= 拖拽排序 ================= */
+
+let dragCardId = null; // 正在被拖拽的卡片 id（与视觉样式解耦，后台标签页 rAF 节流也能工作）
+
+function onCardDragStart(e, card) {
+  // 右上角 × 按钮不作为拖拽起点
+  if (e.target && e.target.closest && e.target.closest('.book-del')) {
+    e.preventDefault();
+    return;
+  }
+  dragCardId = card.dataset.id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', card.dataset.id);
+  // 拖影生成后再加半透明样式，避免拖影本身变淡
+  requestAnimationFrame(() => card.classList.add('dragging'));
+}
+
+function onCardDragOver(e, card) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  if (!dragCardId || card.dataset.id === dragCardId) return;
+  const dragging = card.parentNode.querySelector(`.book-card[data-id="${dragCardId}"]`);
+  if (!dragging) return;
+  const r = card.getBoundingClientRect();
+  const before = e.clientX < r.left + r.width / 2;
+  card.parentNode.insertBefore(dragging, before ? card : card.nextSibling);
+}
+
+function onCardDrop(e) {
+  e.preventDefault();
+}
+
+async function onCardDragEnd(e, card) {
+  dragCardId = null;
+  card.classList.remove('dragging');
+  const grid = card.parentNode;
+  const ids = [...grid.querySelectorAll('.book-card')].map((n) => n.dataset.id);
+  const currentIds = sortBooks(state.shelfView === 'vault' ? state.hiddenLibrary : state.library).map((m) => m.id);
+  if (ids.join('|') === currentIds.join('|')) return;
+  await backend.reorderBooks(ids);
+  if (state.shelfView === 'vault') {
+    state.hiddenLibrary = await backend.getHiddenLibrary();
+  } else {
+    state.library = await backend.getLibrary();
+  }
+  renderShelf();
 }
 
 async function doImportDialog() {
