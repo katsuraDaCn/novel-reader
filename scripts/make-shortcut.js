@@ -29,6 +29,7 @@ const iconFile = path.join(assetsDir, 'icon.ico');
 
 const ps = `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 Add-Type -AssemblyName System.Drawing
 
@@ -72,18 +73,31 @@ $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
 $bmp.Dispose()
 `;
 
+// PowerShell 在非 TTY 管道下会把错误包装成 CLIXML，直接打印会是一堆乱码，
+// 这里先把 <S S="Error"> 的内容还原成纯文本，再丢掉 CLIXML 容器。
+function cleanPs(raw) {
+  let s = String(raw || '');
+  s = s.replace(/<S S="Error">([\s\S]*?)<\/S>/g, (_, t) => t.replace(/_x000D_|_x000A_/g, '\n'));
+  s = s.replace(/^#<\s*CLIXML.*$/gm, '');
+  s = s.replace(/<[^>]*>/g, '');
+  return s.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function runPs(text) {
   const res = spawnSync(
     'powershell.exe',
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')],
     { stdio: 'pipe', encoding: 'utf8' }
   );
+  const out = cleanPs(res.stdout);
+  const err = cleanPs(res.stderr);
   if (res.status !== 0) {
-    process.stdout.write(res.stdout || '');
-    process.stderr.write(res.stderr || '');
+    if (out) process.stdout.write(out + '\n');
+    if (err) process.stderr.write(err + '\n');
     process.exit(res.status || 1);
   }
-  return res.stdout || '';
+  if (err) process.stderr.write(err + '\n');
+  return out;
 }
 
 runPs(ps);
@@ -109,6 +123,7 @@ fs.copyFileSync(pngFile, path.join(assetsDir, 'icon-preview.png'));
 // ---- 创建“开始菜单 → 所有应用”快捷方式，并尝试固定到“开始”屏幕 ----
 const psShortcut = `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
 $programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
@@ -123,21 +138,43 @@ $lnk.Description = '小说阅读器'
 $lnk.Save()
 Write-Output ('LNK=' + $lnkPath)
 
-# 尝试通过 Shell 动词自动固定到“开始”屏幕
+# 尝试通过 Shell 动词固定到“开始”屏幕。
+# 注意：已固定的快捷方式只有「从“开始”菜单取消固定」没有「固定到“开始”屏幕」，
+# 因此必须先把“取消固定”排除掉，否则会误调取消固定并抛 E_ACCESSDENIED。
 $shell = New-Object -ComObject Shell.Application
 $ns = $shell.NameSpace($programs)
 $item = $ns.ParseName('小说阅读器.lnk')
-$verbNames = @($item.Verbs() | ForEach-Object { $_.Name })
+$verbs = @($item.Verbs())
+$verbNames = @($verbs | ForEach-Object { $_.Name -replace '&', '' })
 Write-Output ('VERBS=' + ($verbNames -join ' | '))
-$pin = $item.Verbs() | Where-Object { ($_.Name -replace '&', '') -match '固定.*开始|开始.*固定|Pin.*Start|Start.*Pin' }
-if ($pin) {
-  $pin | Select-Object -First 1 | ForEach-Object { $_.DoIt() }
-  Start-Sleep -Milliseconds 800
-  Write-Output ('PIN_INVOKED=' + (@($pin)[0].Name))
+
+$unpinVerb = $verbs | Where-Object { ($_.Name -replace '&', '') -match '取消固定|Unpin from' }
+$pinVerb = $verbs | Where-Object {
+  $n = ($_.Name -replace '&', '').Trim()
+  ($n -notmatch '取消|Unpin') -and ($n -match '固定到|Pin to (Start|Taskbar)')
+}
+
+if ($unpinVerb) {
+  Write-Output 'PIN_STATE=ALREADY_PINNED'
+} elseif (-not $pinVerb) {
+  Write-Output 'PIN_STATE=NO_VERB'
 } else {
-  Write-Output 'PIN_VERB_NOT_FOUND'
+  try {
+    $pinVerb | Select-Object -First 1 | ForEach-Object { $_.DoIt() }
+    Start-Sleep -Milliseconds 800
+    Write-Output 'PIN_STATE=PINNED'
+  } catch {
+    Write-Output ('PIN_STATE=BLOCKED ' + $_.Exception.Message)
+  }
 }
 `;
 const out = runPs(psShortcut);
-process.stdout.write(out);
+process.stdout.write(out + '\n');
 console.log('ICON=' + iconFile);
+
+if (!/PIN_STATE=(PINNED|ALREADY_PINNED)/.test(out)) {
+  console.log('');
+  console.log('快捷方式已安装到「开始菜单 → 所有应用」，可以直接搜索“小说阅读器”启动。');
+  console.log('自动固定到「开始」屏幕被系统拦截，手动固定只需一次点击：');
+  console.log('  开始菜单 → 所有应用 → 右键「小说阅读器」→ 固定到“开始”屏幕');
+}

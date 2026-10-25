@@ -143,6 +143,13 @@ function createMockApi() {
       });
       return true;
     },
+    updateBookmarks: async (id, bookmarks) => {
+      const meta = lib.find((m) => m.id === id);
+      if (!meta) return false;
+      if (meta.hidden && !sec.unlocked) return false;
+      meta.bookmarks = bookmarks;
+      return true;
+    },
     importDialog: async () => ({ canceled: false, added: [addBook(makeDemoBook())], skipped: 0 }),
     importPaths: async () => ({ added: [addBook(makeDemoBook())], skipped: 0 }),
     getBook: async (id) => {
@@ -223,8 +230,10 @@ const state = {
   library: [],
   hiddenLibrary: [],
   book: null, // 当前打开的书（含 chapters）
+  currentMeta: null, // 当前书的 meta（含 bookmarks），与 state.book 同步
   chapterIdx: 0,
   shelfView: 'normal', // 'normal' 普通书架 | 'vault' 隐藏书架
+  panelTab: 'toc', // 目录面板当前标签页：'toc' | 'marks'
   settings: { ...DEFAULT_SETTINGS },
 };
 
@@ -481,6 +490,11 @@ async function openBook(id) {
     state.library.find((m) => m.id === id) ||
     (state.hiddenLibrary || []).find((m) => m.id === id) ||
     book;
+  state.currentMeta = meta;
+  state.panelTab = 'toc';
+  $('#tab-toc').classList.add('active');
+  $('#tab-marks').classList.remove('active');
+  $('#toc-search').classList.remove('hidden');
   const idx = Math.min(meta.chapterIdx || 0, book.chapters.length - 1);
   $('#reader-book-title').textContent = book.title;
   $('#toc-search').value = '';
@@ -535,12 +549,14 @@ function renderChapter(idx, opts = {}) {
   page.style.animation = '';
 
   const scroller = $('#reader-scroll');
-  requestAnimationFrame(() => {
-    if (opts.term && highlightTerm(opts.term)) return;
+  // 同步恢复滚动：读取 scrollHeight 会强制布局，无需等 rAF（后台面板 rAF 可能被节流）
+  if (opts.term && highlightTerm(opts.term)) {
+    // highlightTerm 内部已滚动到关键词位置
+  } else {
     const max = scroller.scrollHeight - scroller.clientHeight;
     const ratio = opts.ratio || 0;
     scroller.scrollTop = ratio > 0 ? Math.max(0, Math.min(max, max * ratio)) : 0;
-  });
+  }
 }
 
 function highlightTerm(term) {
@@ -616,7 +632,12 @@ function renderToc(filter) {
   const term = (filter || '').trim();
 
   if (!term) {
-    book.chapters.forEach((c, i) => list.appendChild(tocItem(i, c.title)));
+    const marked = new Set(currentMarks().map((b) => b.chapterIdx));
+    book.chapters.forEach((c, i) => {
+      const item = tocItem(i, c.title);
+      if (marked.has(i)) item.appendChild(el('span', 'toc-mark', '🔖'));
+      list.appendChild(item);
+    });
     renderTocCurrent();
     return;
   }
@@ -697,7 +718,7 @@ function openPanel(which) {
   $('#settings-panel').classList.toggle('open', which === 'settings');
   $('#panel-mask').classList.toggle('hidden', !which);
   if (which === 'toc') {
-    renderTocCurrent();
+    renderPanelContent();
   }
 }
 
@@ -708,6 +729,108 @@ function closePanels() {
 function togglePanel(which) {
   const panel = which === 'toc' ? $('#toc-panel') : $('#settings-panel');
   openPanel(panel.classList.contains('open') ? null : which);
+}
+
+/* ================= 书签 ================= */
+
+function currentMarks() {
+  return (state.currentMeta && state.currentMeta.bookmarks) || [];
+}
+
+async function addBookmark() {
+  if (!state.book || !state.currentMeta) return;
+  const marks = currentMarks();
+  const ratio = currentScrollRatio();
+  const dup = marks.find((b) => b.chapterIdx === state.chapterIdx && Math.abs(b.scrollRatio - ratio) < 0.005);
+  if (dup) {
+    toast('这个位置已有书签');
+    return;
+  }
+  if (marks.length >= 100) {
+    toast('书签已达上限（100 个）');
+    return;
+  }
+  const ch = state.book.chapters[state.chapterIdx];
+  const pct = Math.round(ratio * 100);
+  // 章节标题自带“第N章/卷/序章”等前缀时直接使用，避免出现“第1章 第1章 …”
+  const base = /^(第\s*[0-9０-９零〇一二三四五六七八九十百千万两]+|chapter|[卷序楔引]|尾声|终章|后记|番外)/i.test(ch.title)
+    ? ch.title.slice(0, 60)
+    : `第${state.chapterIdx + 1}章 ${ch.title.slice(0, 50)}`;
+  const next = marks.concat([
+    {
+      id: 'mk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      chapterIdx: state.chapterIdx,
+      scrollRatio: ratio,
+      label: base + (pct >= 2 ? ` · ${pct}%` : ''),
+      createdAt: Date.now(),
+    },
+  ]);
+  const ok = await backend.updateBookmarks(state.book.id, next);
+  if (!ok) {
+    toast('书签保存失败');
+    return;
+  }
+  state.currentMeta.bookmarks = next;
+  toast('已添加书签');
+  if (!$('#toc-panel').classList.contains('open')) return;
+  renderPanelContent();
+}
+
+async function deleteBookmark(bm) {
+  if (!state.currentMeta) return;
+  const next = currentMarks().filter((b) => b.id !== bm.id);
+  const ok = await backend.updateBookmarks(state.book.id, next);
+  if (!ok) {
+    toast('删除失败');
+    return;
+  }
+  state.currentMeta.bookmarks = next;
+  renderPanelContent();
+  toast('已删除书签');
+}
+
+function renderMarks() {
+  const list = $('#toc-list');
+  list.textContent = '';
+  const marks = currentMarks()
+    .slice()
+    .sort((a, b) => a.chapterIdx - b.chapterIdx || a.scrollRatio - b.scrollRatio);
+  $('#marks-count').textContent = String(marks.length);
+  if (!marks.length) {
+    list.appendChild(el('div', 'toc-empty', '还没有书签 · 阅读时点顶栏 🔖 收藏当前位置'));
+    return;
+  }
+  for (const bm of marks) {
+    const item = el('div', 'toc-item with-del');
+    const main = el('div', 'toc-main');
+    main.appendChild(el('span', 'toc-name', bm.label));
+    item.append(el('span', 'toc-no', '🔖'), main);
+    const del = el('button', 'mark-del', '×');
+    del.title = '删除书签';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteBookmark(bm);
+    });
+    item.appendChild(del);
+    item.addEventListener('click', () => {
+      closePanels();
+      gotoChapter(bm.chapterIdx, { ratio: bm.scrollRatio });
+    });
+    list.appendChild(item);
+  }
+}
+
+function renderPanelContent() {
+  if (state.panelTab === 'marks') renderMarks();
+  else renderToc($('#toc-search').value);
+}
+
+function showPanelTab(which) {
+  state.panelTab = which;
+  $('#tab-toc').classList.toggle('active', which === 'toc');
+  $('#tab-marks').classList.toggle('active', which === 'marks');
+  $('#toc-search').classList.toggle('hidden', which === 'marks');
+  renderPanelContent();
 }
 
 /* ================= 右键菜单与隐私书架密码弹窗 ================= */
@@ -989,6 +1112,9 @@ function bindDragDrop() {
 function bindEvents() {
   $('#btn-import').addEventListener('click', doImportDialog);
   $('#btn-back').addEventListener('click', backToShelf);
+  $('#btn-add-bookmark').addEventListener('click', addBookmark);
+  $('#tab-toc').addEventListener('click', () => showPanelTab('toc'));
+  $('#tab-marks').addEventListener('click', () => showPanelTab('marks'));
   $('#btn-toc').addEventListener('click', () => togglePanel('toc'));
   $('#btn-settings').addEventListener('click', () => togglePanel('settings'));
   $('#panel-mask').addEventListener('click', closePanels);

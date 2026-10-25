@@ -47,6 +47,7 @@
         <span id="reader-book-title" class="reader-book-title"></span>
       </div>
       <div class="topbar-actions">
+        <button id="btn-add-bookmark" class="btn ghost" title="在当前位置添加书签">🔖</button>
         <button id="btn-toc" class="btn ghost">目录</button>
         <button id="btn-settings" class="btn ghost">设置</button>
       </div>
@@ -72,10 +73,13 @@
       <button id="btn-next" class="btn ghost" title="下一章 (→)">下一章</button>
     </footer>
 
-    <!-- 目录面板 -->
+    <!-- 目录 / 书签面板 -->
     <aside id="toc-panel" class="side-panel left">
       <div class="panel-head">
-        <h3>目录 <span id="toc-count" class="muted"></span></h3>
+        <div class="panel-tabs">
+          <button id="tab-toc" class="panel-tab active">目录 <span id="toc-count" class="muted"></span></button>
+          <button id="tab-marks" class="panel-tab">书签 <span id="marks-count" class="muted"></span></button>
+        </div>
         <input id="toc-search" type="search" placeholder="搜索章节 / 全文…">
       </div>
       <div id="toc-list" class="toc-list"></div>

@@ -13,7 +13,8 @@ npm run shortcut  # 安装到“开始菜单 → 所有应用”，并尝试自�
 ```
 
 启动入口指向 `node_modules\electron\dist\electron.exe`，应用图标在 `assets/icon.ico`。
-Windows 11 禁止脚本直接固定到“开始”屏幕，若 `npm run shortcut` 未能自动固定，
+Windows 11 禁止脚本直接固定到“开始”屏幕，`npm run shortcut` 只会报告
+`PIN_STATE=ALREADY_PINNED` / `PIN_STATE=BLOCKED`，这不影响快捷方式本身：
 打开开始菜单 → 所有应用 → 右键「小说阅读器」→ 固定到“开始”屏幕即可（一次点击）。
 
 ## 功能

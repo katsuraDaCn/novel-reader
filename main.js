@@ -165,6 +165,32 @@ function registerIpc() {
     return true;
   });
 
+  // 书签：整表保存到书籍 meta（id/chapterIdx/scrollRatio/label/createdAt）
+  ipcMain.handle('bookmarks:update', (_e, id, bookmarks) => {
+    if (typeof id !== 'string' || !Array.isArray(bookmarks) || bookmarks.length > 100) return false;
+    for (const b of bookmarks) {
+      if (
+        !b ||
+        typeof b.id !== 'string' ||
+        !Number.isInteger(b.chapterIdx) ||
+        b.chapterIdx < 0 ||
+        typeof b.scrollRatio !== 'number' ||
+        !Number.isFinite(b.scrollRatio) ||
+        typeof b.label !== 'string' ||
+        b.label.length > 120
+      ) {
+        return false;
+      }
+    }
+    const lib = readLibrary();
+    const meta = lib.find((m) => m.id === id);
+    if (!meta) return false;
+    if (meta.hidden && !vaultUnlocked) return false;
+    meta.bookmarks = bookmarks;
+    writeLibrary(lib);
+    return true;
+  });
+
   ipcMain.handle('progress:save', (_e, id, progress) => {
     if (typeof id !== 'string' || !progress || typeof progress !== 'object') return false;
     const lib = readLibrary();
